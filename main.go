@@ -61,7 +61,7 @@ func main() {
 		}
 
 		answer := chatCompletion.Choices[0].Message.Content
-		messages = append(messages, openai.SystemMessage(answer))
+		messages = append(messages, openai.AssistantMessage(answer))
 		fmt.Println(answer)
 	}
 }
