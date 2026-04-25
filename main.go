@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -38,18 +41,26 @@ func main() {
 		option.WithBaseURL("https://api.deepseek.com"),
 	)
 
-	params := openai.ChatCompletionNewParams{
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage("Hello, DeepSeek!"),
-		},
-		Model: "deepseek-chat",
+	var messages []openai.ChatCompletionMessageParamUnion
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "exit" {
+			break
+		}
+		messages = append(messages, openai.UserMessage(line))
+		params := openai.ChatCompletionNewParams{
+			Messages: messages,
+			Model:    "deepseek-chat",
+		}
+
+		chatCompletion, err := client.Chat.Completions.New(context.Background(), params)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		answer := chatCompletion.Choices[0].Message.Content
+		messages = append(messages, openai.SystemMessage(answer))
+		fmt.Println(answer)
 	}
-
-	chatCompletion, err := client.Chat.Completions.New(context.Background(), params)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println(chatCompletion.Choices[0].Message.Content)
 }
