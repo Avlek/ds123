@@ -48,20 +48,33 @@ func main() {
 		if strings.TrimSpace(line) == "exit" {
 			break
 		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
 		messages = append(messages, openai.UserMessage(line))
 		params := openai.ChatCompletionNewParams{
 			Messages: messages,
 			Model:    "deepseek-chat",
 		}
 
-		chatCompletion, err := client.Chat.Completions.New(context.Background(), params)
-		if err != nil {
+		answer := ""
+		stream := client.Chat.Completions.NewStreaming(context.Background(), params)
+		for stream.Next() {
+			chunk := stream.Current()
+			if len(chunk.Choices) > 0 {
+				chunkText := chunk.Choices[0].Delta.Content
+				fmt.Print(chunkText)
+				answer += chunkText
+			}
+		}
+
+		if err = stream.Err(); err != nil {
 			fmt.Println(err)
 			continue
 		}
 
-		answer := chatCompletion.Choices[0].Message.Content
 		messages = append(messages, openai.AssistantMessage(answer))
-		fmt.Println(answer)
+		fmt.Println()
 	}
 }
