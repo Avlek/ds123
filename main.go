@@ -56,7 +56,8 @@ func main() {
 
 		chatCompletion, err := client.Chat.Completions.New(context.Background(), params)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Println(err)
+			continue
 		}
 
 		answer := chatCompletion.Choices[0].Message.Content
