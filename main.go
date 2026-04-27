@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/openai/openai-go"
@@ -158,7 +162,30 @@ func main() {
 		return c.JSON(http.StatusOK, ChatResponse{Reply: reply})
 	})
 
-	log.Fatal(e.Start(":8080"))
+	ctx2, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	serverErr := make(chan error, 1)
+	go func() {
+		if err2 := e.Start(":8080"); err2 != nil && !errors.Is(err2, http.ErrServerClosed) {
+			serverErr <- err2
+		}
+		close(serverErr)
+	}()
+
+	select {
+	case <-ctx2.Done():
+		log.Println("signal received, shutting down")
+	case err2 := <-serverErr:
+		log.Println("server crashed:", err2)
+	}
+
+	stop()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err = e.Shutdown(shutdownCtx); err != nil {
+		log.Println("shutdown error:", err)
+	}
 
 	//chat.Stream()
 }
