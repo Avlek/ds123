@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,11 +20,13 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	APIKey string `mapstructure:"DEEPSEEK_API_KEY"`
+	APIKey           string `mapstructure:"DEEPSEEK_API_KEY"`
+	YandexWeatherKey string `mapstructure:"YANDEX_WEATHR_API_KEY"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -49,13 +53,91 @@ type ChatResponse struct {
 
 type Chat struct {
 	client   openai.Client
+	config   *Config
 	mu       sync.Mutex
 	sessions map[string]*Session
+}
+
+var tools = []openai.ChatCompletionToolParam{
+	{
+		Function: shared.FunctionDefinitionParam{
+			Name:        "get_current_time",
+			Description: openai.String("Возвращает текущее время на сервере"),
+		},
+		Type: "function",
+	}, {
+		Function: shared.FunctionDefinitionParam{
+			Name:        "get_weather",
+			Description: openai.String("Возвращает текущую погоду в указанном городе по координатам"),
+			Parameters: openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"latitude": map[string]any{
+						"type":        "number",
+						"description": "Широта города",
+					},
+					"longitude": map[string]any{
+						"type":        "number",
+						"description": "Долгота города",
+					}},
+			},
+		},
+		Type: "function",
+	},
+}
+
+type FactWeather struct {
+	Temp      float64 `json:"temp"`
+	WindSpeed float64 `json:"wind_speed"`
+	Humidity  float64 `json:"humidity"`
+}
+
+type WeatherResponse struct {
+	Fact FactWeather `json:"fact"`
 }
 
 type Session struct {
 	mu       sync.Mutex
 	messages []openai.ChatCompletionMessageParamUnion
+}
+
+func getCurrentTime() time.Time {
+	return time.Now()
+}
+
+func getWeather(ctx context.Context, key string, lat, lon float64) (*WeatherResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("https://api.weather.yandex.ru/v2/forecast?lat=%f&lon=%f", lat, lon), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Yandex-Weather-Key", key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = http.MaxBytesReader(nil, resp.Body, 1<<20)
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Yandex returned %d: %s", resp.StatusCode, body)
+	}
+
+	var response WeatherResponse
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message string) (string, error) {
@@ -75,17 +157,58 @@ func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message strin
 
 	userMsg := openai.UserMessage(message)
 	messages := append(slices.Clone(sess.messages), userMsg)
+	answer := ""
 
-	params := openai.ChatCompletionNewParams{
-		Messages: messages,
-		Model:    "deepseek-chat",
+	for range 5 {
+		params := openai.ChatCompletionNewParams{
+			Messages: messages,
+			Tools:    tools,
+			Model:    "deepseek-chat",
+		}
+		chatCompletion, err := ch.client.Chat.Completions.New(ctx, params)
+		if err != nil {
+			return "", err
+		}
+		if len(chatCompletion.Choices[0].Message.ToolCalls) > 0 {
+			messages = append(messages, chatCompletion.Choices[0].Message.ToParam())
+			var result any
+			for _, call := range chatCompletion.Choices[0].Message.ToolCalls {
+				switch call.Function.Name {
+				case "get_current_time":
+					result = getCurrentTime()
+				case "get_weather":
+					var args struct {
+						Latitude  float64 `json:"latitude"`
+						Longitude float64 `json:"longitude"`
+					}
+					err = json.Unmarshal([]byte(call.Function.Arguments), &args)
+					if err != nil {
+						result = map[string]string{
+							"error": "не смог прочитать аргументы" + err.Error(),
+						}
+						break
+					}
+					result, err = getWeather(ctx, ch.config.YandexWeatherKey, args.Latitude, args.Longitude)
+					if err != nil {
+						result = map[string]string{
+							"error": "не смог получить данные" + err.Error(),
+						}
+					}
+				default:
+					result = map[string]string{
+						"error": "такая функция не найдена",
+					}
+				}
+
+				content, _ := json.Marshal(result)
+				messages = append(messages, openai.ToolMessage(string(content), call.ID))
+			}
+			continue
+		}
+		answer = chatCompletion.Choices[0].Message.Content
+		sess.messages = append(slices.Clone(messages), openai.AssistantMessage(answer))
+		break
 	}
-	chatCompletion, err := ch.client.Chat.Completions.New(ctx, params)
-	if err != nil {
-		return "", err
-	}
-	answer := chatCompletion.Choices[0].Message.Content
-	sess.messages = append(sess.messages, userMsg, openai.AssistantMessage(answer))
 
 	return answer, nil
 }
@@ -143,6 +266,7 @@ func main() {
 			option.WithAPIKey(config.APIKey),
 			option.WithBaseURL("https://api.deepseek.com"),
 		),
+		config:   config,
 		mu:       sync.Mutex{},
 		sessions: make(map[string]*Session),
 	}
