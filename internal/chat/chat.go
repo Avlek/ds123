@@ -1,13 +1,10 @@
 package chat
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/avlek/ds123/internal/storage"
@@ -34,7 +31,7 @@ type Chat struct {
 	Storage       *storage.Storage
 }
 
-func NewChat(apiKey, weatherAPIKey string, storage *storage.Storage) *Chat {
+func New(apiKey, weatherAPIKey string, storage *storage.Storage) *Chat {
 	return &Chat{
 		Client: openai.NewClient(
 			option.WithAPIKey(apiKey),
@@ -52,6 +49,7 @@ func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message strin
 	sess, ok := ch.sessionLocks[sessionID]
 	if !ok {
 		sess = &sync.Mutex{}
+		ch.sessionLocks[sessionID] = sess
 	}
 	ch.mu.Unlock()
 
@@ -72,6 +70,7 @@ func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message strin
 	userMsg := openai.UserMessage(message)
 	messages := append(slices.Clone(sessionMessages), userMsg)
 	answer := ""
+	good := false
 
 	for range 5 {
 		params := openai.ChatCompletionNewParams{
@@ -121,7 +120,12 @@ func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message strin
 		}
 		answer = chatCompletion.Choices[0].Message.Content
 		sessionMessages = append(slices.Clone(messages), openai.AssistantMessage(answer))
+		good = true
 		break
+	}
+
+	if !good {
+		return "", fmt.Errorf("модель не вернула финальный ответ за 5 итераций")
 	}
 
 	data, err := json.Marshal(sessionMessages)
@@ -134,43 +138,4 @@ func (ch *Chat) SendMessage(ctx context.Context, sessionID string, message strin
 	}
 
 	return answer, nil
-}
-
-func (ch *Chat) Stream() {
-	var messages []openai.ChatCompletionMessageParamUnion
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "exit" {
-			break
-		}
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-
-		messages = append(messages, openai.UserMessage(line))
-		params := openai.ChatCompletionNewParams{
-			Messages: messages,
-			Model:    "deepseek-chat",
-		}
-
-		answer := ""
-		stream := ch.Client.Chat.Completions.NewStreaming(context.Background(), params)
-		for stream.Next() {
-			chunk := stream.Current()
-			if len(chunk.Choices) > 0 {
-				chunkText := chunk.Choices[0].Delta.Content
-				fmt.Print(chunkText)
-				answer += chunkText
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			fmt.Println(err)
-			continue
-		}
-
-		messages = append(messages, openai.AssistantMessage(answer))
-		fmt.Println()
-	}
 }

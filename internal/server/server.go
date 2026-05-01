@@ -16,11 +16,9 @@ import (
 )
 
 type Server struct {
-	e             *echo.Echo
-	APIKey        string
-	WeatherAPIKey string
-	Chat          *chat.Chat
-	Storage       *storage.Storage
+	e       *echo.Echo
+	Chat    *chat.Chat
+	Storage *storage.Storage
 }
 
 func New(pool *pgxpool.Pool, apiKey, weatherAPIKey string) *Server {
@@ -29,7 +27,7 @@ func New(pool *pgxpool.Pool, apiKey, weatherAPIKey string) *Server {
 
 	return &Server{
 		e:    e,
-		Chat: chat.NewChat(apiKey, weatherAPIKey, s),
+		Chat: chat.New(apiKey, weatherAPIKey, s),
 	}
 }
 

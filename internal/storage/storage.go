@@ -28,7 +28,7 @@ func (s *Storage) GetMessages(ctx context.Context, sessionID string) ([]byte, er
 
 func (s *Storage) SaveMessages(ctx context.Context, sessionID string, data []byte) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO sessions (session_id, messages) 
-		VALUES ($1, $2) ON CONFLICT (session_id) DO UPDATE SET messages = $2`, sessionID, data)
+		VALUES ($1, $2) ON CONFLICT (session_id) DO UPDATE SET messages = excluded.messages, updated_at = now()`, sessionID, data)
 
 	return err
 }
